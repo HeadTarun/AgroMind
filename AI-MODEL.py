@@ -1,5 +1,5 @@
 import streamlit as st
-import requests, os, json, tempfile, wave, av
+import requests, os, json, tempfile
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestClassifier
@@ -8,24 +8,31 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, AudioProcessorBase
-from typing import List
+from st_audiorec import st_audiorec
+from gtts import gTTS
 
 # ------------------- Config -------------------
-st.set_page_config(page_title="ChatGPT-style Crop Assistant", layout="wide")
-st.title("🌾 AI Crop Recommendation Assistant")
+st.set_page_config(page_title="🌾 AI कृषि सहायक (आवाज़)", layout="wide")
+st.title("🌾 AI आधारित फसल सलाह सहायक (हिंदी, आवाज़ सहित)")
 
 # ------------------- Load Env -------------------
 load_dotenv()
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 WEATHER_API_KEY = os.getenv("WEATHER_API_KEY")
 GROQ_BASE = "https://api.groq.com/openai/v1"
-if not GROQ_API_KEY: st.error("Set GROQ_API_KEY in .env"); st.stop()
+if not GROQ_API_KEY:
+    st.error("❌ .env में GROQ_API_KEY सेट करें")
+    st.stop()
 
 # ------------------- Session State -------------------
-if "chat_history" not in st.session_state: st.session_state.chat_history = []
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# ------------------- Location & Soil/Weather -------------------
+if st.sidebar.button("♻️ चैट रीसेट करें"):
+    st.session_state.chat_history = []
+    st.experimental_rerun()
+
+# ------------------- Location, Soil & Weather -------------------
 def get_user_location():
     try:
         res = requests.get("https://ipinfo.io/json", timeout=5)
@@ -44,139 +51,135 @@ def fetch_soil(lat, lon):
         return {"phh2o":6.5,"nitrogen":50,"ocd":10,"sand":40,"silt":40}
 
 def fetch_weather(lat, lon):
-    if not WEATHER_API_KEY: return {"temp_c":25,"humidity":70,"precip_mm":2,"wind_kph":10}
+    if not WEATHER_API_KEY: 
+        return {"temp_c":25,"humidity":70,"precip_mm":2,"wind_kph":10}
     try:
-        url=f"http://api.weatherapi.com/v1/current.json?key={WEATHER_API_KEY}&q={lat},{lon}"
-        r=requests.get(url,timeout=8)
-        c=r.json().get("current",{})
-        return {"temp_c":c.get("temp_c",25),"humidity":c.get("humidity",70),
-                "precip_mm":c.get("precip_mm",2),"wind_kph":c.get("wind_kph",10)}
-    except: return {"temp_c":25,"humidity":70,"precip_mm":2,"wind_kph":10}
+        url = f"http://api.weatherapi.com/v1/current.json?key={WEATHER_API_KEY}&q={lat},{lon}"
+        r = requests.get(url, timeout=8)
+        c = r.json().get("current", {})
+        return {"temp_c":c.get("temp_c",25),"humidity":c.get("humidity",70),"precip_mm":c.get("precip_mm",2),"wind_kph":c.get("wind_kph",10)}
+    except:
+        return {"temp_c":25,"humidity":70,"precip_mm":2,"wind_kph":10}
 
 lat, lon = get_user_location()
 soil_data = fetch_soil(lat, lon)
 weather_data = fetch_weather(lat, lon)
 
-st.sidebar.write("🧪 Soil Data"); st.sidebar.json(soil_data)
-st.sidebar.write("🌤 Weather Data"); st.sidebar.json(weather_data)
+st.sidebar.header("📊 मिट्टी और मौसम डेटा")
+st.sidebar.json({"मिट्टी": soil_data, "मौसम": weather_data})
 
 # ------------------- ML Crop Model -------------------
 def prepare_features(soil, weather):
-    df=pd.DataFrame([soil])
-    df=pd.concat([df,pd.DataFrame([weather])],axis=1).fillna(0)
+    df = pd.DataFrame([soil])
+    df = pd.concat([df, pd.DataFrame([weather])], axis=1).fillna(0)
     return StandardScaler().fit_transform(df)
 
-X_scaled=prepare_features(soil_data, weather_data)
+X_scaled = prepare_features(soil_data, weather_data)
+
 def train_model(X):
     np.random.seed(42)
-    y=np.random.choice([0,1,2],size=X.shape[0])
+    y = np.random.choice([0,1,2], size=X.shape[0])
     if X.shape[0]==1:
-        X=np.tile(X,(20,1)); y=np.random.choice([0,1,2],size=X.shape[0])
-    clf=RandomForestClassifier(n_estimators=100,random_state=42); clf.fit(X,y)
+        X = np.tile(X,(20,1))
+        y = np.random.choice([0,1,2], size=X.shape[0])
+    clf = RandomForestClassifier(n_estimators=100, random_state=42)
+    clf.fit(X, y)
     return clf
 
-clf=train_model(X_scaled)
-crop_map={0:"🌾 गेहूँ (Wheat)",1:"🌱 धान (Rice)",2:"🌽 मक्का (Maize)"}
-predicted_crop=crop_map.get(clf.predict(X_scaled)[0],"Unknown")
-st.sidebar.success(f"✅ ML Suggestion: {predicted_crop}")
+clf = train_model(X_scaled)
+crop_map = {0:"🌾 गेहूँ", 1:"🌱 धान", 2:"🌽 मक्का"}
+predicted_crop = crop_map.get(clf.predict(X_scaled)[0], "❓ अज्ञात")
+st.sidebar.success(f"✅ मशीन लर्निंग सुझाव: {predicted_crop}")
 
 # ------------------- Groq LLM -------------------
-MODEL_NAME="gemma2-9b-it"
-llm=ChatGroq(groq_api_key=GROQ_API_KEY, model_name=MODEL_NAME, temperature=0.7, streaming=True)
-prompt=ChatPromptTemplate.from_messages([
-    ("system","आप एक कृषि AI सहायक हैं। किसान को मिट्टी + मौसम + ML परिणाम के आधार पर सरल हिंदी में समझाइए। "
-              "बताइए यह फसल क्यों उपयुक्त है, 2-3 विकल्प दीजिए, और वास्तविक उदाहरण शामिल कीजिए।"),
+MODEL_NAME = "gemma2-9b-it"
+llm = ChatGroq(
+    groq_api_key=GROQ_API_KEY,
+    model_name=MODEL_NAME,
+    temperature=0.7,
+    streaming=True
+)
+
+prompt = ChatPromptTemplate.from_messages([
+    ("system","आप एक कृषि विशेषज्ञ AI सहायक हैं। मिट्टी, मौसम और ML मॉडल के आधार पर किसान को सरल हिंदी में सलाह दें।"),
     ("user","{question}")
 ])
-chain=prompt | llm | StrOutputParser()
+chain = prompt | llm | StrOutputParser()
 
 # ------------------- Speech Functions -------------------
 def speech_to_text(file_path): 
-    url=f"{GROQ_BASE}/audio/transcriptions"
+    url = f"{GROQ_BASE}/audio/transcriptions"
     with open(file_path,"rb") as f:
-        resp=requests.post(url, headers={"Authorization":f"Bearer {GROQ_API_KEY}"}, data={"model":"whisper-large-v3"}, files={"file":(os.path.basename(file_path),f)}, timeout=30)
-    resp.raise_for_status(); return resp.json().get("text","")
+        resp = requests.post(
+            url,
+            headers={"Authorization":f"Bearer {GROQ_API_KEY}"},
+            data={"model":"whisper-large-v3"},
+            files={"file":(os.path.basename(file_path), f)},
+            timeout=30
+        )
+    resp.raise_for_status()
+    return resp.json().get("text","")
 
 def text_to_speech(text, filename="response.mp3"):
-    url=f"{GROQ_BASE}/audio/speech"
-    payload={"model":"gpt-4o-mini-tts","voice":"alloy","input":text}
-    resp=requests.post(url, headers={"Authorization":f"Bearer {GROQ_API_KEY}","Content-Type":"application/json"}, data=json.dumps(payload), timeout=30)
-    resp.raise_for_status()
-    with open(filename,"wb") as f: f.write(resp.content)
+    tts = gTTS(text, lang="hi")
+    tts.save(filename)
     return filename
 
-# ------------------- Audio Processor -------------------
-class AudioProcessor(AudioProcessorBase):
-    def __init__(self): self.audio_frames:List[bytes]=[]
-    def recv_audio(self, frame: av.AudioFrame) -> av.AudioFrame:
-        self.audio_frames.append(frame.to_ndarray().tobytes()); return frame
-
-def save_wav(frames:List[bytes], path:str):
-    combined=b"".join(frames)
-    with wave.open(path,"wb") as wf: wf.setnchannels(1); wf.setsampwidth(2); wf.setframerate(48000); wf.writeframes(combined)
-    return path
-
-# ------------------- Display Chat -------------------
+# ------------------- Chat Display -------------------
 for msg in st.session_state.chat_history:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# ------------------- Input Bar -------------------
-
-if user_input := st.chat_input("Ask about crop or soil..."):
+# Text input
+if user_input := st.chat_input("✍️ अपना सवाल लिखें..."):
     with st.chat_message("user"):
         st.markdown(user_input)
-    
-    st.session_state.chat_history.append({"role": "user", "content": user_input})
-    enriched = f"{user_input}\n\nमिट्टी डेटा: {soil_data}\nमौसम डेटा: {weather_data}\nML सुझाव: {predicted_crop}\nकृपया किसान को सरल हिंदी में समझाइए।"
-    
-    try:
-        response_container = st.chat_message("assistant")
-        response_placeholder = response_container.empty()
-        full_response = ""
+    st.session_state.chat_history.append({"role":"user","content":user_input})
+
+    enriched = f"{user_input}\n\nमिट्टी: {soil_data}\nमौसम: {weather_data}\nML सुझाव: {predicted_crop}\nसरल हिंदी में बताएं।"
+    response_placeholder = st.empty()
+    full_response = ""
+    with st.spinner("🤖 जवाब तैयार हो रहा है..."):
         for chunk in chain.stream({"question": enriched}):
             full_response += chunk
-            response_placeholder.markdown(full_response + "▌")
-        
-        response_placeholder.markdown(full_response)
-        
-        try:
-            audio_file = text_to_speech(full_response)
-            st.audio(audio_file, format="audio/mp3")
-        except:
-            st.write(full_response)
-        
-        st.session_state.chat_history.append({"role": "assistant", "content": full_response})
-    
-    except Exception as e:
-        st.error(f"LLM failed: {e}")
+            response_placeholder.markdown(full_response)
 
+    st.session_state.chat_history.append({"role":"assistant","content": full_response})
+    st.success("✅ जवाब तैयार!")
+    audio_file = text_to_speech(full_response)
+    st.audio(audio_file, format="audio/mp3")
 
-with st.sidebar:
-    st.subheader("Upload Audio or Use Mic")
-    uploaded_file = st.file_uploader("Upload an audio file", type=["wav", "mp3", "m4a"])
-    if uploaded_file:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(uploaded_file.name)[1]) as tmp:
-            tmp.write(uploaded_file.read())
+# ------------------- Voice Input -------------------
+st.markdown("---")
+st.subheader("🎤 बोलकर पूछें (Voice)")
+
+col1, col2, col3 = st.columns([1,2,1])
+with col2:
+    wav_audio_data = st_audiorec()
+    button_placeholder = st.empty()
+    if wav_audio_data is not None:
+        st.audio(wav_audio_data, format="audio/wav")
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp.write(wav_audio_data)
             audio_path = tmp.name
-        try:
-            text = speech_to_text(audio_path)
-            st.session_state.chat_history.append({"role": "user", "content": text})
-            st.experimental_rerun()
-        except Exception as e:
-            st.error(f"Audio transcription failed: {e}")
 
-    st.markdown("---")
-    st.subheader("Use Microphone")
-    ctx = webrtc_streamer(key="mic_stream", mode=WebRtcMode.SENDRECV, audio_processor_factory=AudioProcessor, media_stream_constraints={"audio": True, "video": False}, async_processing=True)
-    if ctx.audio_processor and ctx.audio_processor.audio_frames:
-        if st.button("🎤 Send Mic", key="mic_btn"):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                save_wav(ctx.audio_processor.audio_frames, tmp.name)
-                mic_path = tmp.name
-            try:
-                mic_text = speech_to_text(mic_path)
-                st.session_state.chat_history.append({"role": "user", "content": mic_text})
-                st.experimental_rerun()
-            except Exception as e:
-                st.error(f"Mic transcription failed: {e}")
+        # Show button immediately
+        if button_placeholder.button("🔎 जवाब पाएं"):
+            with st.spinner("🔄 आवाज़ को टेक्स्ट में बदल रहा है..."):
+                voice_text = speech_to_text(audio_path)
+                st.success(f"🗣 पहचाना गया सवाल: {voice_text}")
+
+            enriched_voice = f"{voice_text}\n\nमिट्टी: {soil_data}\nमौसम: {weather_data}\nML सुझाव: {predicted_crop}\nसरल हिंदी में बताएं।"
+            response_placeholder_voice = st.empty()
+            full_response_voice = ""
+            with st.spinner("🤖 जवाब सोच रहा है..."):
+                for chunk in chain.stream({"question": enriched_voice}):
+                    full_response_voice += chunk
+                    response_placeholder_voice.markdown(full_response_voice)  # streaming without repetition
+
+            st.session_state.chat_history.append({"role":"user","content": voice_text})
+            st.session_state.chat_history.append({"role":"assistant","content": full_response_voice})
+
+            reply_audio = text_to_speech(full_response_voice)
+            st.success("✅ जवाब तैयार है — नीचे सुनें 👇")
+            st.audio(reply_audio, format="audio/mp3")
