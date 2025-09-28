@@ -1,25 +1,19 @@
-streamlit
-pandas
-numpy
-scikit-learn
+
 joblib
 requests
-python-dotenv
 groq
-# Core web & Streamlit
-streamlit
-streamlit-webrtc
-
-# Audio & video processing
 av
-pydub # optional, for more robust audio conversion
+pydub 
+streamlit
 numpy
 pandas
-
-
-
-# HTTP requests & environment variables
-
-# LangChain & Groq
-langchain-groq
+scikit-learn
+requests
+gtts
+python-dotenv
+langchain
 langchain-core
+langchain-groq
+st-audiorec
+pyttsx3
+pywin32
