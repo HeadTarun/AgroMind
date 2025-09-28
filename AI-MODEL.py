@@ -22,21 +22,26 @@ from sklearn.preprocessing import StandardScaler
 from langchain_groq import ChatGroq
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-import pyttsx3
+# ------------------- Safe TTS Warm-up -------------------
+try:
+    import pyttsx3
 
+    def warmup_tts():
+        try:
+            engine = pyttsx3.init()
+            engine.say("Warm-up")
+            engine.runAndWait()
+            engine.stop()
+        except Exception as inner_e:
+            logger.warning(f"TTS warm-up skipped: {inner_e}")
 
-def warmup_tts():
-    try:
-        engine = pyttsx3.init()
-        engine.say("Warm-up")
-        engine.runAndWait()
-        engine.stop()
-    except Exception as e:
-        st.warning(f"TTS warm-up failed: {e}")
+    if "tts_warmed_up" not in st.session_state:
+        warmup_tts()
+        st.session_state["tts_warmed_up"] = True
 
-if "tts_warmed_up" not in st.session_state:
-    warmup_tts()
-    st.session_state["tts_warmed_up"] = True
+except ImportError:
+    logger.warning("pyttsx3 not installed or not supported. Skipping TTS warm-up.")
+
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
