@@ -40,7 +40,7 @@ try:
         st.session_state["tts_warmed_up"] = True
 
 except ImportError:
-    logger.warning("pyttsx3 not installed or not supported. Skipping TTS warm-up.")
+    st.warning("pyttsx3 not installed or not supported. Skipping TTS warm-up.")
 
 
 # Configure logging
