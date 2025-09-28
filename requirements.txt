@@ -16,4 +16,3 @@ langchain-core
 langchain-groq
 st-audiorec
 pyttsx3
-pywin32
