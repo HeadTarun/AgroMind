@@ -33,7 +33,7 @@ try:
             engine.runAndWait()
             engine.stop()
         except Exception as inner_e:
-            logger.warning(f"TTS warm-up skipped: {inner_e}")
+            st.warning(f"TTS warm-up skipped: {inner_e}")
 
     if "tts_warmed_up" not in st.session_state:
         warmup_tts()
