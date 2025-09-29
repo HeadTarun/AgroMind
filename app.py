@@ -11,7 +11,6 @@ import streamlit as st
 import logging
 from typing import Optional, Tuple, Dict, Any
 from datetime import datetime
-from threading import Thread,Event
 from openai import OpenAI
 from dotenv import load_dotenv
 from gtts import gTTS
@@ -163,33 +162,6 @@ class SpeechToText:
         except Exception as e:
             logger.error(f"Unexpected transcription error: {e}")
             return ""
-
-# ------------------- Audio Generator with Thread Safety -------------------
-class AudioGenerator:
-    """Thread-safe audio generator"""
-    def __init__(self, tts_system: UnifiedTTSSystem):
-        self.tts_system = tts_system
-        self.result = None
-        self.error = None
-        self.done = Event()
-    
-    def generate(self, text: str):
-        """Generate audio in thread"""
-        try:
-            self.result = self.tts_system.generate_audio(text)
-        except Exception as e:
-            self.error = e
-            logger.error(f"Audio generation thread error: {e}")
-        finally:
-            self.done.set()
-    
-    def get_result(self, timeout: float = 15.0) -> Optional[bytes]:
-        """Wait for result with timeout"""
-        if self.done.wait(timeout):
-            return self.result
-        logger.warning("Audio generation timed out")
-        return None
-
 
 
 # ------------------- Page config & Enhanced CSS -------------------
@@ -357,27 +329,26 @@ def get_location_html():
 
 # ------------------- Session state initialization -------------------
 def init_session_state():
-    """Initialize all session state variables"""
-    defaults = {
-        "app_initialized": False,
-        "tts_system_ready": False,
-        "stt_warmed": False,
-        "chat_history": [],
-        "processing": False,
-        "last_audio_data": None,
-        "voice_enabled": True,
-        "auto_play_response": True,
-        "use_offline_tts": False, 
-        "location_method": "ip",
-        "html_location": None,
-        "warmup_status": "प्रारंभ कर रहे हैं...",
-        "tts_system": UnifiedTTSSystem(),
-        "stt": SpeechToText()
-    }
+     """Initialize all session state variables"""
+     if "app_initialized" not in st.session_state:
+        st.session_state.update({
+            "app_initialized": False,
+            "tts_system_ready": False,
+            "stt_warmed": False,
+            "chat_history": [],
+            "processing": False,
+            "last_audio_data": None,
+            "voice_enabled": True,
+            "auto_play_response": True,
+            "use_offline_tts": False,
+            "location_method": "ip",
+            "html_location": None,
+            "warmup_status": "प्रारंभ कर रहे हैं...",
+            "tts_system": UnifiedTTSSystem(),
+            "stt": SpeechToText()
+        })
+
     
-    for key, default_value in defaults.items():
-        if key not in st.session_state:
-            st.session_state[key] = default_value
 
 init_session_state()
 
@@ -720,7 +691,7 @@ with st.sidebar:
 
 # ------------------- Enhanced Groq LLM setup -------------------
 try:
-    MODEL_NAME = "openai/gpt-oss-20B"
+    MODEL_NAME = "llama-3.3-70b-versatile"
     llm = ChatGroq(
         groq_api_key=GROQ_API_KEY,
         model_name=MODEL_NAME,
@@ -801,117 +772,63 @@ def get_llm_response(user_question: str) -> str:
 
 
 # ------------------- Streamlit UI -------------------
+# ------------------- Voice Input & LLM Response -------------------
 st.markdown('<div class="voice-section">', unsafe_allow_html=True)
 st.subheader("🎤 आवाज़ से सवाल पूछें")
 
 col1, col2, col3 = st.columns([1, 2, 1])
 with col2:
-      wav_audio_data = st_audiorec()
-      st.caption("रिकॉर्ड बटन दो बार और स्टॉप बटन एक बार दबाएं")
+    wav_audio_data = st_audiorec()
+st.caption("रिकॉर्ड बटन दो बार और स्टॉप बटन एक बार दबाएं")
 
-    
-      if wav_audio_data is not None:
-        if wav_audio_data != st.session_state.last_audio_data:
-            st.session_state.last_audio_data = wav_audio_data
-            st.audio(wav_audio_data, format="audio/wav")
-            st.success("🎵 रिकॉर्ड हो गया!")
-        
-        if st.button("🔎 जवाब पाएं", type="primary", disabled=st.session_state.processing):
-            st.session_state.processing = True
-            temp_path = None
-            
-            try:
-                # Save temp file
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-                    tmp.write(wav_audio_data)
-                    temp_path = tmp.name
-                
-                # Transcribe
-                with st.spinner("🔄 समझ रहे हैं..."):
-                    voice_text = st.session_state.stt.transcribe(temp_path)
-                
-                if not voice_text:
-                    st.error("❌ आवाज़ स्पष्ट नहीं आई")
-                else:
-                    st.success(f"🗣️ {voice_text}")
-                    
-                    # Get response
-                    with st.spinner("🤖 जवाब तैयार कर रहे हैं..."):
-                        response = get_llm_response(voice_text)
-                    
-                    st.markdown(f"### 🤖 {response}")
-                    
-                    # Save to history
-                    st.session_state.chat_history.append({
-                        "role": "user",
-                        "content": voice_text,
-                        "timestamp": datetime.now().isoformat()
-                    })
-                    
-                    # Generate audio
-                    if st.session_state.voice_enabled and response:
-                        with st.spinner("🎧 आवाज़ में तैयार कर रहे हैं..."):
-                            audio_gen = AudioGenerator(st.session_state.tts_system)
-                            thread = Thread(target=audio_gen.generate, args=(response,), daemon=True)
-                            thread.start()
-                            
-                            audio_bytes = audio_gen.get_result(timeout=15.0)
-                            
-                            if audio_bytes:
-                                st.audio(audio_bytes, format="audio/mp3", autoplay=st.session_state.auto_play_response)
-                                st.success("🔊 तैयार!")
-                            else:
-                                st.info("💡 टेक्स्ट पढ़ें")
-            
-            except Exception as e:
-                st.error(f"❌ त्रुटि: {str(e)}")
-                logger.error(f"Voice processing error: {e}")
-            finally:
-                if temp_path:
-                    try:
-                        os.unlink(temp_path)
-                    except:
-                        pass
-                st.session_state.processing = False
-st.markdown('</div>', unsafe_allow_html=True)
+# Process voice input only once per recording
+if wav_audio_data is not None and wav_audio_data != st.session_state.last_audio_data:
+    st.session_state.last_audio_data = wav_audio_data
+    st.audio(wav_audio_data, format="audio/wav")
+    st.success("🎵 रिकॉर्ड हो गया!")
 
-# ------------------- Enhanced Chat History Display -------------------
-st.subheader("💬 बातचीत का इतिहास")
+    try:
+        with st.spinner("🔄 समझ रहे हैं..."):
+            # Transcribe audio bytes
+            voice_text = st.session_state.stt.transcribe(wav_audio_data)
 
-if st.session_state.chat_history:
-    for i, message in enumerate(st.session_state.chat_history):
-        role = message.get("role")
-        content = message.get("content", "")
-        msg_type = message.get("type", "text")
-        timestamp = message.get("timestamp", "")
+        if not voice_text.strip():
+            st.error("❌ आवाज़ स्पष्ट नहीं आई")
+        else:
+            st.success(f"🗣️ {voice_text}")
 
-        if role == "user":
-            st.markdown(f'<div class="user-message">', unsafe_allow_html=True)
-            icon = "🎤" if msg_type == "voice" else "✍️"
-            st.markdown(f"**{icon} उपयोगकर्ता:** {content}")
-            if timestamp:
-                st.caption(f"⏰ {timestamp[:19].replace('T', ' ')}")
-            st.markdown('</div>', unsafe_allow_html=True)
+            # Save user message
+            st.session_state.chat_history.append({
+                "role": "user",
+                "content": voice_text,
+                "type": "voice",
+                "timestamp": datetime.now().isoformat()
+            })
 
-        else:  # assistant message
-            st.markdown(f'<div class="assistant-message">', unsafe_allow_html=True)
-            st.markdown(f"**🤖 AI सलाहकार:** {content}")
-            if timestamp:
-                st.caption(f"⏰ {timestamp[:19].replace('T', ' ')}")
+            # Get LLM response
+            with st.spinner("🤖 जवाब तैयार कर रहे हैं..."):
+                response = get_llm_response(voice_text)
 
-            # Audio playback button for assistant messages
-            if st.session_state.voice_enabled:
-                col1, col2 = st.columns([1, 4])
-                with col1:
-                    if st.button(f"🔊", key=f"play_audio_{i}", help="इस जवाब को सुनें"):
-                        with st.spinner("🎧 आवाज़ तैयार कर रहे हैं..."):
-                            audio_bytes = st.session_state.tts_system.generate_audio(content)
-                            if audio_bytes:
-                                st.audio(audio_bytes, format="audio/mp3")
+            st.markdown(f"### 🤖 {response}")
 
-            st.markdown('</div>', unsafe_allow_html=True)
+            # TTS playback
+            if st.session_state.voice_enabled and response:
+                with st.spinner("🎧 आवाज़ में तैयार कर रहे हैं..."):
+                    audio_bytes = st.session_state.tts_system.generate_audio(response)
+                    if audio_bytes:
+                        st.audio(audio_bytes, format="audio/mp3")
+                        st.success("🔊 तैयार!")
+                    else:
+                        st.info("💡 टेक्स्ट पढ़ें")
 
-        st.markdown("<br>", unsafe_allow_html=True)
+    except Exception as e:
+        st.error(f"❌ त्रुटि: {str(e)}")
+        logger.error(f"Voice processing error: {e}")
+    finally:
+     st.session_state.processing = False
+ 
+    st.markdown('</div>', unsafe_allow_html=True)
+
 
 else:
    st.markdown("""
@@ -929,13 +846,13 @@ else:
 .chat-container h4 {
     font-size: 1.8rem;
     margin-bottom: 10px;
-    color: #00FF7F; /* 🌿 हल्का हरा टाइटल */
+    color: #00FF7F;
 }
 .chat-container ul li {
     margin-bottom: 5px;
 }
 .chat-container em {
-    color: #FFD700; /* 🌟 सुनहरा रंग (emphasis text) */
+    color: #FFD700;
 }
 </style>
 
@@ -1003,17 +920,13 @@ def process_text_input(user_input: str):
             "timestamp": datetime.now().isoformat()
         })
     
+        # Generate audio - NO THREADING, direct call
         if st.session_state.voice_enabled and full_response:
             with st.spinner("🎧 आवाज़ में तैयार कर रहे हैं..."):
-                audio_gen = AudioGenerator(st.session_state.tts_system)
-                thread = Thread(target=audio_gen.generate, args=(full_response,), daemon=True)
-                thread.start()
-
-                # Wait for audio to finish generating
-                audio_bytes = audio_gen.get_result(timeout=15.0)
+                audio_bytes = st.session_state.tts_system.generate_audio(full_response)
 
                 if audio_bytes:
-                    st.audio(audio_bytes, format="audio/mp3", autoplay=st.session_state.auto_play_response)
+                    st.audio(audio_bytes, format="audio/mp3")
                     st.success("🔊 तैयार!")
                 else:
                     st.info("💡 टेक्स्ट जवाब तैयार है, लेकिन आवाज़ नहीं बनाई जा सकी।")
